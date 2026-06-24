@@ -195,11 +195,45 @@ Flags: `--limit N`, `--english-only`, `--wolfram-only`.
 ## Colab workflow
 
 1. **Sections 1–4** — GPU runtime, install deps, clone/pull repo (`/content/wolfram-guardrails`)
-2. **Sections 5–9** — Train QLoRA adapter, merge to `merged_hf`
-3. **Section 10** — Base vs fine-tuned parser on Cycle 6 holdout
-4. **Section 14** — Path A vs C (`prepare_english_vs_wolfram()` in `colab_runtime_helpers.py`)
+2. **Section 4b** — Pull `merged_hf` from Hugging Face Hub (skip 7–9 if model already published)
+3. **Sections 7–9** — Train QLoRA adapter and merge (skip if 4b succeeded)
+4. **Section 9b** — Push `merged_hf` to Hugging Face Hub (once, after first train)
+5. **Section 10** — Base vs fine-tuned parser on Cycle 6 holdout
+6. **Section 14** — Path A vs C
 
-After a runtime restart with checkpoints already on disk: run **section 2 + 14a–14c**; do not re-clone (section 4 wipes a non-git folder but `git pull` preserves `results/finetune/`).
+After a runtime restart: run **section 2 + 4b** (or 4b alone if secrets set) then **10 / 14**. GitHub has code and datasets only — model weights live on Hugging Face Hub.
+
+## Model artifacts (Hugging Face Hub)
+
+GitHub excludes `results/` (see `.gitignore`). Publish and pull the fine-tuned parser separately:
+
+| Step | Where | Action |
+|------|--------|--------|
+| **First train** | Colab section 9 | Creates `results/finetune/colab_qwen25_3b/merged_hf` |
+| **Upload** | Colab section 9b | Push to `HF_HUB_MODEL_REPO` (set in section 2) |
+| **Pull in Colab** | Section 4b | Download into `merged_hf` — skip retraining |
+| **Pull locally** | Terminal | See below |
+
+**Colab secrets:** add `HF_TOKEN` (read for pull, write for upload). Set `HF_HUB_MODEL_REPO` in section 2 or export `WOLFRAM_PARSER_HF_REPO`.
+
+**Local pull:**
+
+```bash
+pip install -U 'huggingface_hub>=0.26.0'
+export HF_TOKEN=hf_...   # or huggingface-cli login
+
+huggingface-cli download YOUR_USER/wolfram-guardrails-qwen25-3b-parser-v1 \
+  --local-dir results/finetune/colab_qwen25_3b/merged_hf
+```
+
+Then point comparison scripts at `results/finetune/colab_qwen25_3b/merged_hf`.
+
+Or use the helper script:
+
+```bash
+python examples/pull_parser_model.py \
+  --repo-id YOUR_USER/wolfram-guardrails-qwen25-3b-parser-v1
+```
 
 ## Project structure
 

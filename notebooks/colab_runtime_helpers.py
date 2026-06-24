@@ -51,6 +51,103 @@ def repair_merged_hf_tokenizer(merged_dir: Path) -> None:
         print("Sanitized merged_hf tokenizer_config.json")
 
 
+def merged_hf_is_complete(merged_dir: Path) -> bool:
+    """Return True when merged_hf looks like a loadable HF checkpoint."""
+    merged_dir = Path(merged_dir)
+    if not merged_dir.is_dir():
+        return False
+    has_config = (merged_dir / "config.json").is_file()
+    has_weights = any(merged_dir.glob("*.safetensors")) or any(merged_dir.glob("pytorch_model*.bin"))
+    return has_config and has_weights
+
+
+def pull_merged_hf_from_hub(
+    *,
+    repo_id: str,
+    merged_dir: Path,
+    token: str | None = None,
+    revision: str = "main",
+) -> Path:
+    from huggingface_hub import snapshot_download
+
+    merged_dir = Path(merged_dir)
+    merged_dir.mkdir(parents=True, exist_ok=True)
+    token = token or os.environ.get("HF_TOKEN")
+    print(f"Pulling merged_hf from Hugging Face Hub: {repo_id} (revision={revision})")
+    snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(merged_dir),
+        local_dir_use_symlinks=False,
+        token=token,
+        revision=revision,
+    )
+    repair_merged_hf_tokenizer(merged_dir)
+    if not merged_hf_is_complete(merged_dir):
+        raise FileNotFoundError(
+            f"Download from {repo_id} did not produce a complete merged_hf at {merged_dir}"
+        )
+    print("Downloaded merged_hf to", merged_dir)
+    return merged_dir
+
+
+def push_merged_hf_to_hub(
+    *,
+    repo_id: str,
+    merged_dir: Path,
+    token: str | None = None,
+    private: bool = True,
+    commit_message: str = "Upload Wolfram Guardrails Qwen2.5-3B parser merged_hf",
+) -> str:
+    from huggingface_hub import create_repo, upload_folder
+
+    merged_dir = Path(merged_dir)
+    if not merged_hf_is_complete(merged_dir):
+        raise FileNotFoundError(f"Cannot upload incomplete merged_hf from {merged_dir}")
+    token = token or os.environ.get("HF_TOKEN")
+    create_repo(repo_id, private=private, exist_ok=True, token=token)
+    upload_folder(
+        repo_id=repo_id,
+        folder_path=str(merged_dir),
+        token=token,
+        commit_message=commit_message,
+    )
+    url = f"https://huggingface.co/{repo_id}"
+    print("Uploaded merged_hf to", url)
+    return url
+
+
+def ensure_merged_hf(
+    *,
+    merged_dir: Path,
+    hf_hub_repo_id: str | None = None,
+    hf_token: str | None = None,
+    pull_if_missing: bool = True,
+    revision: str = "main",
+) -> Path:
+    """Use local merged_hf when present; otherwise pull from Hugging Face Hub."""
+    merged_dir = Path(merged_dir)
+    hf_hub_repo_id = (hf_hub_repo_id or os.environ.get("WOLFRAM_PARSER_HF_REPO") or "").strip() or None
+
+    if merged_hf_is_complete(merged_dir):
+        repair_merged_hf_tokenizer(merged_dir)
+        print("Using local merged_hf:", merged_dir)
+        return merged_dir
+
+    if pull_if_missing and hf_hub_repo_id:
+        return pull_merged_hf_from_hub(
+            repo_id=hf_hub_repo_id,
+            merged_dir=merged_dir,
+            token=hf_token,
+            revision=revision,
+        )
+
+    raise FileNotFoundError(
+        f"merged_hf not found at {merged_dir}.\n"
+        "Train sections 7-9, run section 9b to upload, or set HF_HUB_MODEL_REPO / "
+        "WOLFRAM_PARSER_HF_REPO and HF_TOKEN to pull from Hugging Face Hub."
+    )
+
+
 def verify_repo_layout(*, repo_dir: Path, dataset_paths: list[Path]) -> None:
     missing = [str(p.relative_to(repo_dir)) for p in dataset_paths if not p.exists()]
     missing += [rel for rel in COMPARISON_SCRIPTS if not (repo_dir / rel).exists()]
@@ -160,6 +257,8 @@ def prepare_english_vs_wolfram(
     merged_dir: Path | None = None,
     english_model: str = "llama3",
     pull_latest: bool = True,
+    hf_hub_repo_id: str | None = None,
+    hf_token: str | None = None,
 ) -> Path:
     """Run before section 14 comparison cells (safe after runtime restart)."""
     repo_dir = Path(repo_dir or os.environ.get("WOLFRAM_GUARDRAILS_DIR", REPO_DIR_DEFAULT))
@@ -174,12 +273,12 @@ def prepare_english_vs_wolfram(
 
     ensure_repo_cwd(repo_dir=repo_dir, repo_branch=repo_branch, pull_latest=pull_latest)
     repair_colab_deps()
-
-    if not merged_dir.exists():
-        raise FileNotFoundError(
-            f"Merged model not found at {merged_dir}. Run sections 7-9 (train + merge) first."
-        )
-    repair_merged_hf_tokenizer(merged_dir)
+    ensure_merged_hf(
+        merged_dir=merged_dir,
+        hf_hub_repo_id=hf_hub_repo_id,
+        hf_token=hf_token,
+        pull_if_missing=True,
+    )
     ensure_ollama(model=english_model)
     print("Section 14 ready: English vs fine-tuned Wolfram comparison.")
     return repo_dir
