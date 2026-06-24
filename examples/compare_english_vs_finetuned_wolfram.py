@@ -19,9 +19,24 @@ if str(ROOT) not in sys.path:
 
 from eval.english_evaluator import EnglishEvaluatorError, EnglishGuardrailEvaluator
 
+_PARSER_COMPARE: Any = None
+
+
+def _pc():
+    global _PARSER_COMPARE
+    if _PARSER_COMPARE is None:
+        _PARSER_COMPARE = _load_parser_compare_module()
+    return _PARSER_COMPARE
+
 
 def _load_parser_compare_module():
     module_path = ROOT / "examples" / "compare_colab_qlora_parser.py"
+    if not module_path.is_file():
+        raise FileNotFoundError(
+            f"Missing comparison helper: {module_path}\n"
+            "Run from the repo root (Colab: REPO_DIR=/content/wolfram-guardrails) "
+            "and re-run the clone cell if the runtime was restarted."
+        )
     spec = importlib.util.spec_from_file_location("compare_colab_qlora_parser", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load comparison helpers from {module_path}")
@@ -49,6 +64,7 @@ def evaluate_english(
     evaluator: EnglishGuardrailEvaluator,
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    pc = _pc()
     results: list[dict[str, Any]] = []
     counts = {
         "rows": 0,
@@ -60,8 +76,8 @@ def evaluate_english(
     }
 
     for row in rows:
-        prompt = row_prompt(row)
-        expected = row_expected(row)
+        prompt = pc.row_prompt(row)
+        expected = pc.row_expected(row)
         started = time.perf_counter()
         parse_error = None
         decision = None
@@ -92,7 +108,7 @@ def evaluate_english(
 
         results.append(
             {
-                "id": row_id(row),
+                "id": pc.row_id(row),
                 "prompt": prompt,
                 "expectedDecision": expected,
                 "decision": decision,
@@ -115,9 +131,10 @@ def evaluate_english(
 
 def evaluate_finetuned_wolfram(
     *,
-    backend: HFParserBackend,
+    backend: Any,
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    pc = _pc()
     results: list[dict[str, Any]] = []
     counts = {
         "rows": 0,
@@ -129,12 +146,12 @@ def evaluate_finetuned_wolfram(
     }
 
     for row in rows:
-        prompt = row_prompt(row)
-        expected = row_expected(row)
+        prompt = pc.row_prompt(row)
+        expected = pc.row_expected(row)
         started = time.perf_counter()
         try:
             raw = backend.parse(prompt)
-            decision, semantic, parse_error = decision_from_output(raw)
+            decision, semantic, parse_error = pc.decision_from_output(raw)
         except Exception as exc:  # noqa: BLE001
             raw = ""
             decision, semantic, parse_error = None, None, f"backend_error: {exc}"
@@ -155,7 +172,7 @@ def evaluate_finetuned_wolfram(
 
         results.append(
             {
-                "id": row_id(row),
+                "id": pc.row_id(row),
                 "prompt": prompt,
                 "expectedDecision": expected,
                 "decision": decision,
@@ -264,15 +281,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        parser_compare = _load_parser_compare_module()
-        load_rows = parser_compare.load_rows
-        row_expected = parser_compare.row_expected
-        row_id = parser_compare.row_id
-        row_prompt = parser_compare.row_prompt
-        HFParserBackend = parser_compare.HFParserBackend
-        decision_from_output = parser_compare.decision_from_output
-
-        rows = load_rows(args.dataset)
+        pc = _pc()
+        rows = pc.load_rows(args.dataset)
         if args.limit is not None:
             rows = rows[: args.limit]
 
@@ -291,7 +301,7 @@ def main() -> int:
 
         if not args.english_only:
             print(f"Running path C (fine-tuned Wolfram) on {len(rows)} prompts...")
-            wolfram_backend = HFParserBackend(
+            wolfram_backend = pc.HFParserBackend(
                 model_path=args.candidate_model,
                 max_new_tokens=args.max_new_tokens,
             )
