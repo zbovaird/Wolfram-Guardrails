@@ -37,7 +37,13 @@ def extract_chat_content(data: Any) -> str:
     payload = normalize_chat_response(data)
     message = payload.get("message")
     if isinstance(message, list):
-        parts = [normalize_message_content(item.get("content") if isinstance(item, dict) else item) for item in message]
+        parts: list[str] = []
+        for item in message:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or item.get("value")
+                parts.append(normalize_message_content(text))
+            else:
+                parts.append(normalize_message_content(item))
         text = "".join(part for part in parts if part)
     elif isinstance(message, dict):
         text = normalize_message_content(message.get("content"))

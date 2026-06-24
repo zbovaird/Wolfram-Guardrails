@@ -85,10 +85,22 @@ def extended_to_semantic(data: dict[str, Any]) -> SemanticParse:
     return SemanticParse(
         intent=str(data.get("intent") or ""),
         target=target,
-        techniques=list(data.get("techniques") or []),
+        techniques=_coerce_techniques(data.get("techniques")),
         risk=float(data.get("risk") or 0.0),
         notes=str(data.get("notes") or ""),
     )
+
+
+def _coerce_techniques(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, dict):
+        return [str(key) for key in value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
 
 
 def decision_from_output(raw: str) -> tuple[str | None, SemanticParse | None, str | None]:
@@ -135,12 +147,22 @@ class HFParserBackend:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=dtype,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        load_kwargs: dict[str, Any] = {
+            "device_map": "auto",
+            "trust_remote_code": True,
+        }
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                dtype=dtype,
+                **load_kwargs,
+            )
+        except TypeError:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=dtype,
+                **load_kwargs,
+            )
         self.model.eval()
 
     def parse(self, prompt: str) -> str:

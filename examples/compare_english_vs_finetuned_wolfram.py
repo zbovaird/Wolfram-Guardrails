@@ -30,15 +30,6 @@ def _load_parser_compare_module():
     return module
 
 
-_parser_compare = _load_parser_compare_module()
-HFParserBackend = _parser_compare.HFParserBackend
-decision_from_output = _parser_compare.decision_from_output
-load_rows = _parser_compare.load_rows
-row_expected = _parser_compare.row_expected
-row_id = _parser_compare.row_id
-row_prompt = _parser_compare.row_prompt
-
-
 def score_decision(*, decision: str | None, expected: str, parse_error: str | None) -> str:
     if parse_error or decision is None:
         return "parse_error"
@@ -265,28 +256,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--max-new-tokens", type=int, default=384)
+    parser.add_argument("--english-only", action="store_true")
+    parser.add_argument("--wolfram-only", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
+        parser_compare = _load_parser_compare_module()
+        load_rows = parser_compare.load_rows
+        row_expected = parser_compare.row_expected
+        row_id = parser_compare.row_id
+        row_prompt = parser_compare.row_prompt
+        HFParserBackend = parser_compare.HFParserBackend
+        decision_from_output = parser_compare.decision_from_output
+
         rows = load_rows(args.dataset)
         if args.limit is not None:
             rows = rows[: args.limit]
 
-        english_evaluator = EnglishGuardrailEvaluator(
-            model=args.english_ollama_model,
-            base_url=args.ollama_base_url,
-            timeout_seconds=args.timeout_seconds,
-        )
-        wolfram_backend = HFParserBackend(
-            model_path=args.candidate_model,
-            max_new_tokens=args.max_new_tokens,
-        )
+        english_report = None
+        wolfram_report = None
 
-        english_report = evaluate_english(evaluator=english_evaluator, rows=rows)
-        wolfram_report = evaluate_finetuned_wolfram(backend=wolfram_backend, rows=rows)
+        if not args.wolfram_only:
+            print(f"Running path A (English / {args.english_ollama_model}) on {len(rows)} prompts...")
+            english_evaluator = EnglishGuardrailEvaluator(
+                model=args.english_ollama_model,
+                base_url=args.ollama_base_url,
+                timeout_seconds=args.timeout_seconds,
+            )
+            english_report = evaluate_english(evaluator=english_evaluator, rows=rows)
+            print("English done:", english_report["counts"])
+
+        if not args.english_only:
+            print(f"Running path C (fine-tuned Wolfram) on {len(rows)} prompts...")
+            wolfram_backend = HFParserBackend(
+                model_path=args.candidate_model,
+                max_new_tokens=args.max_new_tokens,
+            )
+            wolfram_report = evaluate_finetuned_wolfram(backend=wolfram_backend, rows=rows)
+            print("Wolfram done:", wolfram_report["counts"])
+
+        if english_report is None or wolfram_report is None:
+            single = english_report or wolfram_report
+            assert single is not None
+            print(json.dumps({"singlePath": single}, indent=2))
+            return 0
+
         run_dir = write_report(
             output_dir=args.output_dir,
             dataset_path=args.dataset,

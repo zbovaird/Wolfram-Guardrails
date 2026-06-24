@@ -52,7 +52,7 @@ class EnglishGuardrailEvaluator:
         return parsed, ok
 
     def _parse_policy_output(self, raw: str) -> tuple[SymbolicDecision | None, bool]:
-        data = extract_json_object(raw)
+        data = normalize_policy_dict(extract_json_object(raw))
         if data is None:
             return None, False
         try:

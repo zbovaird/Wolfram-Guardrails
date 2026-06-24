@@ -11,6 +11,47 @@ JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | r
 JSON_OBJECT_PATTERN = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
 
 
+def normalize_policy_dict(data: Any) -> dict[str, Any] | None:
+    """Coerce common LLM policy JSON shapes into a SymbolicDecision-compatible dict."""
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and "decision" in item:
+                data = item
+                break
+        else:
+            return None
+    if not isinstance(data, dict):
+        return None
+
+    normalized = dict(data)
+    decision = normalized.get("decision")
+    if isinstance(decision, list):
+        normalized["decision"] = decision[0] if decision else ""
+    elif isinstance(decision, dict):
+        normalized["decision"] = (
+            decision.get("value")
+            or decision.get("decision")
+            or next(iter(decision.values()), "")
+        )
+
+    rules = normalized.get("triggeredRules")
+    if isinstance(rules, dict):
+        normalized["triggeredRules"] = [str(key) for key in rules]
+    elif isinstance(rules, list):
+        normalized["triggeredRules"] = [
+            str(rule.get("name") or rule.get("rule") or rule)
+            if isinstance(rule, dict)
+            else str(rule)
+            for rule in rules
+        ]
+
+    severity = normalized.get("severity")
+    if isinstance(severity, list):
+        normalized["severity"] = severity[0] if severity else 0.0
+
+    return normalized
+
+
 def extract_json_object(text: str) -> dict[str, Any] | None:
     """Extract the first JSON object from model output."""
     stripped = text.strip()
