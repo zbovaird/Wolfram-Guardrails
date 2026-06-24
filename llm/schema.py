@@ -60,6 +60,8 @@ class SymbolicDecision(BaseModel):
             return []
         if isinstance(value, str):
             return [value] if value else []
+        if isinstance(value, dict):
+            return [str(key) for key in value]
         if isinstance(value, (list, tuple)):
             return [str(item) for item in value]
         return [str(value)]

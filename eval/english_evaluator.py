@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 
+from llm.ollama_utils import extract_chat_content
 from llm.repair import POLICY_SCHEMA_HINT, build_repair_prompt, extract_json_object
 from llm.schema import Decision, SymbolicDecision, parse_symbolic_dict
 
@@ -82,10 +83,10 @@ class EnglishGuardrailEvaluator:
                 response = client.post(f"{self.base_url}/api/chat", json=payload)
                 response.raise_for_status()
                 data = response.json()
-        content = (data.get("message") or {}).get("content")
-        if not content:
-            raise EnglishEvaluatorError("Empty Ollama response")
-        return str(content)
+        try:
+            return extract_chat_content(data)
+        except ValueError as exc:
+            raise EnglishEvaluatorError(str(exc)) from exc
 
 
 class MockEnglishGuardrailEvaluator:

@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from guardrails.policy import evaluate_guardrails
+from llm.ollama_utils import extract_chat_content
 from llm.repair import extract_json_object
 from llm.schema import Decision, SemanticParse
 
@@ -38,31 +39,40 @@ DATACLASS_TARGET = {
 
 def load_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = line.strip()
-        if line:
-            rows.append(json.loads(line))
+        if not line:
+            continue
+        parsed = json.loads(line)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{path}:{line_no} expected JSON object, got {type(parsed).__name__}")
+        rows.append(parsed)
     return rows
+
+
+def _row_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def row_prompt(row: dict[str, Any]) -> str:
     if "prompt" in row:
         return str(row["prompt"])
     for message in row.get("messages", []):
-        if message.get("role") == "user":
+        if isinstance(message, dict) and message.get("role") == "user":
             return str(message["content"])
-    raise ValueError(f"Could not find prompt in row: {row.get('id') or row.get('metadata', {}).get('id')}")
+    raise ValueError(f"Could not find prompt in row: {row.get('id') or _row_metadata(row).get('id')}")
 
 
 def row_expected(row: dict[str, Any]) -> str:
-    expected = row.get("expectedDecision") or row.get("metadata", {}).get("expectedDecision")
+    expected = row.get("expectedDecision") or _row_metadata(row).get("expectedDecision")
     if not expected:
-        raise ValueError(f"Missing expectedDecision in row: {row.get('id') or row.get('metadata', {}).get('id')}")
+        raise ValueError(f"Missing expectedDecision in row: {row.get('id') or _row_metadata(row).get('id')}")
     return str(expected).upper()
 
 
 def row_id(row: dict[str, Any]) -> str:
-    return str(row.get("id") or row.get("metadata", {}).get("id") or "unknown")
+    return str(row.get("id") or _row_metadata(row).get("id") or "unknown")
 
 
 def extended_to_semantic(data: dict[str, Any]) -> SemanticParse:
@@ -112,10 +122,7 @@ class OllamaParserBackend:
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.post(f"{self.base_url}/api/chat", json=payload)
             response.raise_for_status()
-            content = response.json().get("message", {}).get("content")
-        if not content:
-            raise RuntimeError("Ollama returned empty parser output")
-        return str(content)
+            return extract_chat_content(response.json())
 
 
 class HFParserBackend:

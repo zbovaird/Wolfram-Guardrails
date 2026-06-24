@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 import time
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,14 +18,25 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval.english_evaluator import EnglishEvaluatorError, EnglishGuardrailEvaluator
-from examples.compare_colab_qlora_parser import (
-    HFParserBackend,
-    decision_from_output,
-    load_rows,
-    row_expected,
-    row_id,
-    row_prompt,
-)
+
+
+def _load_parser_compare_module():
+    module_path = ROOT / "examples" / "compare_colab_qlora_parser.py"
+    spec = importlib.util.spec_from_file_location("compare_colab_qlora_parser", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load comparison helpers from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_parser_compare = _load_parser_compare_module()
+HFParserBackend = _parser_compare.HFParserBackend
+decision_from_output = _parser_compare.decision_from_output
+load_rows = _parser_compare.load_rows
+row_expected = _parser_compare.row_expected
+row_id = _parser_compare.row_id
+row_prompt = _parser_compare.row_prompt
 
 
 def score_decision(*, decision: str | None, expected: str, parse_error: str | None) -> str:
@@ -220,6 +233,7 @@ def write_report(
         "promotionGate": {
             "englishFalseAllows": english_report["counts"]["false_allow"],
             "wolframFalseAllows": wolfram_report["counts"]["false_allow"],
+            "englishPassesZeroFalseAllowGate": english_report["counts"]["false_allow"] == 0,
             "wolframPassesZeroFalseAllowGate": wolfram_report["counts"]["false_allow"] == 0,
         },
     }
@@ -256,30 +270,34 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    rows = load_rows(args.dataset)
-    if args.limit is not None:
-        rows = rows[: args.limit]
+    try:
+        rows = load_rows(args.dataset)
+        if args.limit is not None:
+            rows = rows[: args.limit]
 
-    english_evaluator = EnglishGuardrailEvaluator(
-        model=args.english_ollama_model,
-        base_url=args.ollama_base_url,
-        timeout_seconds=args.timeout_seconds,
-    )
-    wolfram_backend = HFParserBackend(
-        model_path=args.candidate_model,
-        max_new_tokens=args.max_new_tokens,
-    )
+        english_evaluator = EnglishGuardrailEvaluator(
+            model=args.english_ollama_model,
+            base_url=args.ollama_base_url,
+            timeout_seconds=args.timeout_seconds,
+        )
+        wolfram_backend = HFParserBackend(
+            model_path=args.candidate_model,
+            max_new_tokens=args.max_new_tokens,
+        )
 
-    english_report = evaluate_english(evaluator=english_evaluator, rows=rows)
-    wolfram_report = evaluate_finetuned_wolfram(backend=wolfram_backend, rows=rows)
-    run_dir = write_report(
-        output_dir=args.output_dir,
-        dataset_path=args.dataset,
-        english_report=english_report,
-        wolfram_report=wolfram_report,
-    )
-    print(json.dumps(json.loads((run_dir / "summary.json").read_text()), indent=2))
-    return 0
+        english_report = evaluate_english(evaluator=english_evaluator, rows=rows)
+        wolfram_report = evaluate_finetuned_wolfram(backend=wolfram_backend, rows=rows)
+        run_dir = write_report(
+            output_dir=args.output_dir,
+            dataset_path=args.dataset,
+            english_report=english_report,
+            wolfram_report=wolfram_report,
+        )
+        print(json.dumps(json.loads((run_dir / "summary.json").read_text()), indent=2))
+        return 0
+    except Exception:
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":

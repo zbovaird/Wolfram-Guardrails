@@ -21,6 +21,10 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return parsed
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    return item
     except json.JSONDecodeError:
         pass
 
