@@ -137,15 +137,49 @@ class OllamaParserBackend:
             return extract_chat_content(response.json())
 
 
+def _load_hf_tokenizer(model_path: Path):
+    import json
+    import os
+
+    from transformers import AutoTokenizer
+
+    model_path = Path(model_path)
+    config_path = model_path / "tokenizer_config.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        extra = config.get("extra_special_tokens")
+        if isinstance(extra, list):
+            patched = dict(config)
+            del patched["extra_special_tokens"]
+            config_path.write_text(json.dumps(patched, indent=2), encoding="utf-8")
+
+    for use_fast in (True, False):
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                use_fast=use_fast,
+            )
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            return tokenizer
+        except (AttributeError, TypeError, ValueError, OSError):
+            continue
+
+    base = os.environ.get("WOLFRAM_PARSER_TOKENIZER", "Qwen/Qwen2.5-3B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
 class HFParserBackend:
     def __init__(self, *, model_path: Path, max_new_tokens: int) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM
 
         self.max_new_tokens = max_new_tokens
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer = _load_hf_tokenizer(model_path)
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
         load_kwargs: dict[str, Any] = {
             "device_map": "auto",

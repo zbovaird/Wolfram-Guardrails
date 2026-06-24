@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from llm.ollama_utils import extract_chat_content
-from llm.repair import POLICY_SCHEMA_HINT, build_repair_prompt, extract_json_object
+from llm.repair import POLICY_SCHEMA_HINT, build_repair_prompt, extract_json_object, normalize_policy_dict
 from llm.schema import Decision, SymbolicDecision, parse_symbolic_dict
 
 
