@@ -58,16 +58,20 @@ Training and comparison: [`notebooks/colab_parser_qlora_finetune.ipynb`](noteboo
 
 ### English vs fine-tuned Wolfram (path A vs C)
 
-Smoke test (30 prompts, `llama3` English judge vs fine-tuned parser + policy):
+Full Cycle 6 holdout (180 prompts, `llama3` English judge vs fine-tuned parser + `policy.py`):
 
 | Metric | English (A) | Wolfram fine-tuned (C) |
 |--------|-------------|-------------------------|
-| Accuracy | **80%** | 67% |
-| **False allows** | **0** | **0** |
-| False reviews | 5 | 7 |
-| Agreement | ~65% | — |
+| Accuracy | 73.3% (132/180) | **74.4%** (134/180) |
+| **False allows** | **7** | **1** |
+| False blocks | 0 | 5 |
+| False reviews | 40 | 30 |
+| Parse errors | 1 | 0 |
+| Passes zero-FA gate | No | No |
 
-Both paths passed the false-allow gate on smoke. English was more accurate; Wolfram was slightly more conservative. **Full 180-prompt A vs C** is the next eval milestone (notebook section **14c**).
+**Agreement:** 72% (~50 prompts disagree). Neither path passes a strict zero–false-allow promotion gate, but Wolfram is **7× safer** on the primary metric and slightly more accurate at full scale.
+
+Smoke test (30 prompts) understated English risk (0 false allows) and Wolfram accuracy (67%); the 180-prompt run is the authoritative comparison. Reproduce via notebook section **14c** or `examples/compare_english_vs_finetuned_wolfram.py`.
 
 ### Schema note
 
@@ -82,23 +86,34 @@ SFT labels use an **extended 13-field** rubric (`config/parser_prompt_extended.t
   - [`examples/compare_colab_qlora_parser.py`](examples/compare_colab_qlora_parser.py) — base vs fine-tuned parser
   - [`examples/compare_english_vs_finetuned_wolfram.py`](examples/compare_english_vs_finetuned_wolfram.py) — path A vs C
 
-## Where Wolfram shines
+## Why Wolfram vs English guardrails
 
-Use the **symbolic Wolfram path** when you care about:
+Recent work on AI guardrail fragility — including [Vassilev, *Robust AI Security and Alignment: A Sisyphean Endeavor?*](https://arxiv.org/html/2512.10100v2) — argues that **natural-language guardrails are inherently brittle** because policy compliance is judged in the same ambiguous medium the attacker controls. Linguistic obfuscation, role-play framing, compositional ambiguity, politeness exploits, and context injection all target intent interpretation in English (or any human language).
 
-1. **Auditability** — Decisions cite triggered rules, not opaque LLM reasoning.
-2. **Deterministic policy** — Same semantic JSON → same decision; rules live in version-controlled `rules.wl`.
-3. **Governance** — Update policy without retraining the parser; security teams can review rules directly.
-4. **Separation of concerns** — Parser extracts meaning; policy encodes org risk (see [docs/policy_translation.md](docs/policy_translation.md)).
-5. **Fail-closed behavior** — After fine-tuning, the parser + rules path strongly prefers REVIEW over false ALLOW on hard cases.
+Vassilev’s Gödel-style result says no checker is complete in theory. The practical defender takeaway is still important: **do not rely on a single LLM reading free-form English as your only policy engine.**
 
-Use the **English judge path** when you need:
+### Where Wolfram shines (vs English-in / English-out guardrails)
 
-- Minimal infrastructure (one Ollama model, one policy prompt)
-- Strong performance on natural-language edge cases without a fixed schema
-- Fast iteration before investing in parser labels and rule maintenance
+This project separates **parsing** (LLM reads English once) from **policy** (deterministic rules over structured semantic JSON):
 
-The ~35% disagreement between paths on smoke suggests they are **complementary**, not redundant. A conservative production pattern: **ALLOW only when both agree**, otherwise REVIEW or BLOCK.
+| Concern | English judge (path A) | Wolfram path (path C) |
+|---------|------------------------|-------------------------|
+| Policy medium | Free-form LLM reasoning on raw prompt | Typed fields → `rules.wl` / `policy.py` |
+| Ambiguity handling | Same language for attack and defense | Policy runs on structured semantics, not metaphor |
+| Auditability | Opaque model judgment | Triggered rules, version-controlled policy |
+| Governance | Retrain / reprompt the judge | Patch rules; retrain parser only when semantics drift |
+| Cycle 6 false allows | **7** | **1** |
+| Parse reliability | 1 error / 180 | 0 errors / 180 |
+
+**What Wolfram does not eliminate:** the parser is still an LLM reading English — obfuscation can target semantic JSON extraction. **What it fixes:** the **policy decision** no longer lives in the fragile English-reasoning layer that Vassilev and most jailbreak literature focus on. Attackers must fool the parser *and* evade explicit rules.
+
+Use the **English judge** for fast baselines and second opinions — not as the sole auto-proceed gate on current evidence.
+
+Use the **Wolfram path** when you need auditability, deterministic policy, rule governance, and fail-closed behavior under scale.
+
+~28% path disagreement on Cycle 6 suggests the paths are **complementary**. A conservative production pattern: **ALLOW only when both agree**, otherwise REVIEW or BLOCK.
+
+See [docs/policy_translation.md](docs/policy_translation.md) for English policy prose → semantic JSON → Wolfram rule mapping.
 
 ## Setup
 
@@ -202,30 +217,30 @@ After a runtime restart with checkpoints already on disk: run **section 2 + 14a�
 
 ## Next steps to improve Wolfram
 
+Dataset expansion and a full retest cycle are planned. Prioritize rows that stress **parser → semantic JSON → rules**, not only end-to-end English judging.
+
 ### Safety (highest priority)
 
-1. **Run full 180-prompt A vs C** (notebook section 14c) and record false allows, false reviews, and agreement.
-2. **Investigate the 1 false allow** on the fine-tuned parser holdout — add near-misses to training and re-evaluate.
+1. **Eliminate the 1 Wolfram false allow** on Cycle 6 — root-cause, add near-miss variants, re-eval on blind holdout.
+2. **Mine ~50 A vs C disagreements** — especially English ALLOW vs Wolfram BLOCK/REVIEW (likely includes English false allows).
 3. **Never ALLOW on parse failure** — enforce REVIEW/BLOCK when semantic JSON or policy JSON is invalid.
+4. **Prototype hybrid gate** — ALLOW only when English and Wolfram agree; REVIEW on disagreement.
 
-### Parser and data
+### Dataset expansion (before retest)
 
-4. **Align runtime schema with training labels** — extend `llm/schema.py` or narrow the label rubric so SFT matches production fields.
-5. **Label disagreement cases** — mine A vs C disagreements and parser/base-vs-finetuned errors for targeted fine-tune rows.
-6. **Expand holdout coverage** — more jailbreaks, credential theft, malware, policy-evasion, and benign educational security prompts.
-7. **Second fine-tune cycle** — train on extended schema + failure-mode rows; track false allows on Cycle 6 and new holdouts.
+5. **Expand blind holdout** — new Cycle 7+ set, disjoint from fine-tune splits.
+6. **Vassilev-style attack classes** — obfuscation, role-play framing, compositional ambiguity, politeness/tone bypasses, indirect/encoded intent (see [arxiv:2512.10100](https://arxiv.org/html/2512.10100v2)).
+7. **Parser stress tests** — prompts aimed at under-reported `risk`, wrong `intent`/`target`, and benign-looking JSON that should still trigger rules.
+8. **Benign hard cases** — reduce Wolfram false blocks (5 on Cycle 6): educational security, summarization, admin tasks.
+9. **Align runtime schema with training labels** — extend `llm/schema.py` or narrow the 13-field SFT rubric so labels match production fields.
 
-### Policy and architecture
+### Parser, policy, and eval
 
-8. **Validate Python mirror vs Wolfram Engine** — Colab uses `policy.py`; promote only after local `rules.wl` parity checks on the same semantic JSON.
-9. **Hybrid gate** — prototype ALLOW-on-agreement (English + Wolfram), REVIEW on disagreement or low parser confidence.
-10. **Rule coverage review** — map false allows and false reviews to missing or weak rules in `rules.wl`.
-
-### Evaluation discipline
-
-11. **Track metrics over time** — false allows (gate), accuracy, false reviews, parse errors, path agreement.
-12. **Multiple English judges** — compare `llama3` vs other Ollama models on the same holdout.
-13. **Document REVIEW outcomes** — REVIEW is success for ambiguous/malicious-adjacent cases under a fail-closed north star.
+10. **Second fine-tune cycle** — train on expanded data + failure-mode rows; track false allows on Cycle 6 and new holdouts.
+11. **Validate Python mirror vs Wolfram Engine** — Colab uses `policy.py`; promote only after local `rules.wl` parity on the same semantic JSON.
+12. **Rule coverage review** — map false allows, false reviews, and false blocks to gaps in `rules.wl`.
+13. **Retest protocol after expansion** — base vs fine-tuned parser (path C), A vs C at full holdout scale, hybrid gate, disagreement export for labeling.
+14. **Track metrics over time** — false allows (gate), accuracy, false reviews/blocks, parse errors, path agreement.
 
 ## Constraints
 
